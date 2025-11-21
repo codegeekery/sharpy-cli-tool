@@ -21,15 +21,25 @@ Convierte imágenes entre formatos modernos de manera sencilla, rápida y eficie
 
 ## 📦 Instalación
 
+### Opción 1: Desde npm (Recomendado)
+```bash
+# Instalación global desde npm
+npm install -g sharpy-cli-tool
+
+# Usar directamente
+sharpy webp
+```
+
+### Opción 2: Desde el código fuente
 ```bash
 # Clonar el repositorio
 git clone https://github.com/codegeekery/sharpy-tool.git
-cd sharpy
+cd sharpy-tool
 
 # Instalar dependencias
 npm install
 
-# (Opcional) Instalación global
+# (Opcional) Instalación global desde local
 npm link
 ```
 
