@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 import fs from "fs/promises";
 import path from "path";
 import sharp from "sharp";
@@ -22,12 +23,16 @@ interface Options {
 function parseArgs(): { format: OutputFormat; options: Options } {
   const [, , ...argv] = process.argv;
 
-  if (argv.length === 0) showHelpAndExit("Debes indicar un formato de salida (p. ej., webp, avif, png).");
+  if (argv.length === 0) showHelpAndExit("Debes indicar un formato de salida...");
+  // Manejar --help primero. Si el primer argumento es --help o -h, mostrar la ayuda y salir.
+  if (argv[0] === "--help" || argv[0] === "-h") showHelpAndExit();
 
+  // Ahora sí, validar formato
   const formatArg = (argv[0] || "").toLowerCase() as OutputFormat;
   if (!SUPPORTED_OUTPUTS.includes(formatArg)) {
-    showHelpAndExit(`Formato no soportado: ${formatArg}. Soportados: ${SUPPORTED_OUTPUTS.join(", ")}`);
+    showHelpAndExit(`Formato no soportado: ${formatArg}. Soportados: ...`);
   }
+
 
   const options: Options = {
     dir: process.cwd(),
@@ -65,7 +70,6 @@ function parseArgs(): { format: OutputFormat; options: Options } {
 }
 
 function normalizeFormat(fmt: OutputFormat): OutputFormat {
-  // sharp usa "jpeg" (no "jpg"); aceptamos ambos
   if (fmt === "jpg") return "jpeg";
   return fmt;
 }
@@ -87,24 +91,24 @@ Opciones:
   -h, --help          Mostrar ayuda
 
 Ejemplos:
-  imgc webp
-  imgc avif -q 70 -r --rm
-  imgc jpeg --dir ./fotos -f -q 85
+  sharpy webp
+  sharpy avif -q 70 -r --rm
+  sharpy jpeg --dir ./fotos -f -q 85
 `);
   process.exit(msg ? 1 : 0);
 }
 
-async function listImages(dir: string, recursive: boolean): Promise<string[]> {
+async function listImages(dir: string, recursive: boolean, excludeExt?: OutputFormat): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const ent of entries) {
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (recursive) files.push(...(await listImages(full, true)));
+      if (recursive) files.push(...(await listImages(full, true, excludeExt)));
     } else if (ent.isFile()) {
       const ext = path.extname(ent.name).slice(1).toLowerCase();
-      if (SUPPORTED_INPUTS.has(ext)) files.push(full);
+      if (SUPPORTED_INPUTS.has(ext) && ext !== excludeExt) files.push(full);
     }
   }
   return files;
@@ -169,9 +173,10 @@ async function main() {
     process.exit(1);
   }
 
-  const files = await listImages(options.dir, options.recursive);
+  const excludeExt = format === "jpeg" ? "jpg" : format;
+  const files = await listImages(options.dir, options.recursive, excludeExt);
   if (files.length === 0) {
-    console.log("No se encontraron imágenes soportadas.");
+    console.log("No se encontraron imágenes soportadas que no estén ya en el formato de destino.");
     return;
   }
 
@@ -188,12 +193,20 @@ async function main() {
       const res = await convertOne(current, format, options);
       results.push(res);
 
+      // Mejora: reintentos al borrar archivo original
       if (res.ok && options.removeOriginal) {
-        try {
-          await fs.unlink(res.src);
-          console.log(`🧹 Borrado original: ${path.relative(options.dir, res.src)}`);
-        } catch (err: any) {
-          console.warn(`⚠️ No se pudo borrar original: ${res.src} (${err.message})`);
+        for (let tries = 0; tries < 3; tries++) {
+          try {
+            // Cambia el delay 
+            await new Promise(r => setTimeout(r, 1000));
+            await fs.unlink(res.src);
+            console.log(`🧹 Borrado original: ${path.relative(options.dir, res.src)}`);
+            break;
+          } catch (err: any) {
+            if (tries === 2) {
+              console.warn(`⚠️ No se pudo borrar original: ${res.src} (${err.message})`);
+            }
+          }
         }
       }
 
