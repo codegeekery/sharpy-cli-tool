@@ -1,6 +1,6 @@
 {
   "name": "sharpy-cli-tool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI para convertir imágenes usando Sharp",
   "main": "dist/index.js",
   "type": "commonjs",
