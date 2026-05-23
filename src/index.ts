@@ -5,12 +5,14 @@ import path from "path";
 import sharp from "sharp";
 
 type OutputFormat = "jpeg" | "jpg" | "png" | "webp" | "avif" | "tiff";
+type RenameStrategy = "original" | "snowflake" | "uuid";
 
 const SUPPORTED_INPUTS = new Set([
   "jpg", "jpeg", "png", "webp", "avif", "tif", "tiff"
 ]);
 
 const SUPPORTED_OUTPUTS: OutputFormat[] = ["jpeg", "jpg", "png", "webp", "avif", "tiff"];
+const SUPPORTED_RENAME: RenameStrategy[] = ["original", "snowflake", "uuid"];
 
 interface Options {
   dir: string;
@@ -18,27 +20,50 @@ interface Options {
   quality?: number;
   force: boolean;
   removeOriginal?: boolean;
+  rename: RenameStrategy;
 }
+
+// --- Generadores de nombre ---
+
+let snowflakeSeq = 0n;
+function generateSnowflake(): string {
+  const timestamp = BigInt(Date.now()) << 22n;
+  const workerId = 1n << 17n;
+  const sequence = snowflakeSeq++ & 0xFFFn;
+  return (timestamp | workerId | sequence).toString();
+}
+
+function generateUUID(): string {
+  return crypto.randomUUID();
+}
+
+function resolveName(src: string, strategy: RenameStrategy): string {
+  switch (strategy) {
+    case "snowflake": return generateSnowflake();
+    case "uuid":      return generateUUID();
+    default:          return path.basename(src, path.extname(src));
+  }
+}
+
+// ---
 
 function parseArgs(): { format: OutputFormat; options: Options } {
   const [, , ...argv] = process.argv;
 
   if (argv.length === 0) showHelpAndExit("Debes indicar un formato de salida...");
-  // Manejar --help primero. Si el primer argumento es --help o -h, mostrar la ayuda y salir.
   if (argv[0] === "--help" || argv[0] === "-h") showHelpAndExit();
 
-  // Ahora sí, validar formato
   const formatArg = (argv[0] || "").toLowerCase() as OutputFormat;
   if (!SUPPORTED_OUTPUTS.includes(formatArg)) {
-    showHelpAndExit(`Formato no soportado: ${formatArg}. Soportados: ...`);
+    showHelpAndExit(`Formato no soportado: ${formatArg}. Soportados: ${SUPPORTED_OUTPUTS.join(", ")}`);
   }
-
 
   const options: Options = {
     dir: process.cwd(),
     recursive: false,
     force: false,
-    removeOriginal: false
+    removeOriginal: false,
+    rename: "original",
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -59,6 +84,13 @@ function parseArgs(): { format: OutputFormat; options: Options } {
       if (!next || isNaN(Number(next))) showHelpAndExit("Calidad inválida para --quality");
       options.quality = Number(next);
       i++;
+    } else if (arg === "--rename") {
+      const next = (argv[i + 1] || "").toLowerCase() as RenameStrategy;
+      if (!SUPPORTED_RENAME.includes(next)) {
+        showHelpAndExit(`Estrategia de renombrado no válida: "${next}". Opciones: ${SUPPORTED_RENAME.join(", ")}`);
+      }
+      options.rename = next;
+      i++;
     } else if (arg === "--help" || arg === "-h") {
       showHelpAndExit();
     } else {
@@ -77,28 +109,34 @@ function normalizeFormat(fmt: OutputFormat): OutputFormat {
 function showHelpAndExit(msg?: string): never {
   if (msg) console.error(`\nError: ${msg}\n`);
   console.log(`Uso:
-  imgc <formato> [opciones]
+  sharpy <formato> [opciones]
 
 <formato>:
   ${SUPPORTED_OUTPUTS.join(", ")}
 
 Opciones:
-  --dir <ruta>        Carpeta a procesar (por defecto, carpeta actual)
-  -r, --recursive     Buscar imágenes en subcarpetas
-  -q, --quality <n>   Calidad (0-100) para formatos con pérdida (jpeg/webp/avif/tiff)
-  -f, --force         Sobrescribir si el destino ya existe
-  --rm, --remove-original   Borrar el archivo original si la conversión fue exitosa
-  -h, --help          Mostrar ayuda
+  --dir <ruta>            Carpeta a procesar (por defecto, carpeta actual)
+  -r, --recursive         Buscar imágenes en subcarpetas
+  -q, --quality <n>       Calidad (0-100) para formatos con pérdida (jpeg/webp/avif/tiff)
+  -f, --force             Sobrescribir si el destino ya existe
+  --rm, --remove-original Borrar el archivo original si la conversión fue exitosa
+  --rename <strategy>     Estrategia de nombre para el archivo de salida:
+                            original   Mantiene el nombre del archivo (default)
+                            snowflake  ID único basado en timestamp
+                            uuid       UUID v4 aleatorio
+  -h, --help              Mostrar ayuda
 
 Ejemplos:
   sharpy webp
   sharpy avif -q 70 -r --rm
   sharpy jpeg --dir ./fotos -f -q 85
+  sharpy webp --rename snowflake
+  sharpy avif --rename uuid -r
 `);
   process.exit(msg ? 1 : 0);
 }
 
-async function listImages(dir: string, recursive: boolean, excludeExt?: OutputFormat): Promise<string[]> {
+async function listImages(dir: string, recursive: boolean, excludeExt?: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
 
@@ -114,9 +152,9 @@ async function listImages(dir: string, recursive: boolean, excludeExt?: OutputFo
   return files;
 }
 
-function destPathFor(srcPath: string, outFmt: OutputFormat): string {
+function destPathFor(srcPath: string, outFmt: OutputFormat, rename: RenameStrategy): string {
   const dir = path.dirname(srcPath);
-  const base = path.basename(srcPath, path.extname(srcPath));
+  const base = resolveName(srcPath, rename);
   const ext = outFmt === "jpeg" ? ".jpg" : `.${outFmt}`;
   return path.join(dir, `${base}${ext}`);
 }
@@ -126,7 +164,7 @@ async function convertOne(
   outFmt: OutputFormat,
   opts: Options
 ): Promise<{ src: string; dest: string; ok: boolean; reason?: string }> {
-  const dest = destPathFor(src, outFmt);
+  const dest = destPathFor(src, outFmt, opts.rename);
 
   if (!opts.force) {
     try {
@@ -161,7 +199,6 @@ async function convertOne(
 async function main() {
   const { format, options } = parseArgs();
 
-  // Validar carpeta
   try {
     const stat = await fs.stat(options.dir);
     if (!stat.isDirectory()) {
@@ -180,9 +217,8 @@ async function main() {
     return;
   }
 
-  console.log(`Encontradas ${files.length} imagen(es). Convirtiendo a ${format.toUpperCase()}...`);
+  console.log(`Encontradas ${files.length} imagen(es). Convirtiendo a ${format.toUpperCase()}... [rename: ${options.rename}]`);
 
-  // Concurrencia simple
   const concurrency = 4;
   let idx = 0;
   const results: Awaited<ReturnType<typeof convertOne>>[] = [];
@@ -193,11 +229,9 @@ async function main() {
       const res = await convertOne(current, format, options);
       results.push(res);
 
-      // Mejora: reintentos al borrar archivo original
       if (res.ok && options.removeOriginal) {
         for (let tries = 0; tries < 3; tries++) {
           try {
-            // Cambia el delay 
             await new Promise(r => setTimeout(r, 1000));
             await fs.unlink(res.src);
             console.log(`🧹 Borrado original: ${path.relative(options.dir, res.src)}`);
